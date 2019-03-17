@@ -202,8 +202,10 @@ static MouseShortcut mshortcuts[] = {
 
 MouseKey mkeys[] = {
 	/* button               mask            function        argument */
-	{ Button4,              ShiftMask,      kscrollup,      {.i =  1} },
-	{ Button5,              ShiftMask,      kscrolldown,    {.i =  1} },
+	{ Button4,              ShiftMask,      kscrollup,      {.i =  -1} },
+	{ Button5,              ShiftMask,      kscrolldown,    {.i =  -1} },
+	{ Button4,              XK_NO_MOD,      kscrollup,      {.i =  10} },
+	{ Button5,              XK_NO_MOD,      kscrolldown,    {.i =  10} },
 	{ Button4,              MODKEY,         kscrollup,      {.i =  1} },
 	{ Button5,              MODKEY,         kscrolldown,    {.i =  1} },
 	{ Button4,              TERMMOD,        zoom,           {.f =  +1} },
@@ -230,7 +232,9 @@ static Shortcut shortcuts[] = {
 	{ TERMMOD,              XK_Next,        zoom,           {.f = -1} },
 	{ MODKEY,               XK_Home,        zoomreset,      {.f =  0} },
 	{ ShiftMask,            XK_Insert,      clippaste,      {.i =  0} },
+	{ ControlMask|ShiftMask,XK_C,           clipcopy,       {.i =  0} },
 	{ MODKEY,               XK_c,           clipcopy,       {.i =  0} },
+	{ ControlMask|ShiftMask,XK_V,           clippaste,      {.i =  0} },
 	{ MODKEY,               XK_v,           clippaste,      {.i =  0} },
 	{ MODKEY,               XK_p,           selpaste,       {.i =  0} },
 	{ MODKEY,               XK_Num_Lock,    numlock,        {.i =  0} },
@@ -298,7 +302,7 @@ static uint ignoremod = Mod2Mask|XK_SWITCH_MOD;
  * Note that if you want to use ShiftMask with selmasks, set this to an other
  * modifier, set to 0 to not use it.
  */
-static uint forceselmod = ShiftMask;
+static uint forceselmod = 0; //ShiftMask;
 
 /*
  * This is the huge key array which defines all compatibility to the Linux
