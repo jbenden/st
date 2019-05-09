@@ -52,10 +52,10 @@ enum selection_snap {
 	SNAP_LINE = 2
 };
 
-typedef unsigned char uchar;
-typedef unsigned int uint;
-typedef unsigned long ulong;
-typedef unsigned short ushort;
+typedef unsigned char uchar; //-V677
+typedef unsigned int uint; //-V677
+typedef unsigned long ulong; //-V677
+typedef unsigned short ushort; //-V677
 
 typedef uint_least32_t Rune;
 

@@ -1,5 +1,6 @@
 /* See LICENSE for license details. */
 #include <errno.h>
+#include <float.h>
 #include <math.h>
 #include <limits.h>
 #include <locale.h>
@@ -184,7 +185,6 @@ static void bpress(XEvent *);
 static void bmotion(XEvent *);
 static void propnotify(XEvent *);
 static void selnotify(XEvent *);
-static void selclear_(XEvent *);
 static void selrequest(XEvent *);
 static void setsel(char *, Time);
 static void mousesel(XEvent *, int);
@@ -348,7 +348,7 @@ evrow(XEvent *e)
 void
 mousesel(XEvent *e, int done)
 {
-	int type, seltype = SEL_REGULAR;
+	uint type, seltype = SEL_REGULAR;
 	uint state = e->xbutton.state & ~(Button1Mask | forceselmod);
 
 	for (type = 1; type < LEN(selmasks); ++type) {
@@ -584,12 +584,6 @@ xclipcopy(void)
 }
 
 void
-selclear_(XEvent *e)
-{
-	selclear();
-}
-
-void
 selrequest(XEvent *e)
 {
 	XSelectionRequestEvent *xsre;
@@ -597,7 +591,7 @@ selrequest(XEvent *e)
 	Atom xa_targets, string, clipboard;
 	char *seltext;
 
-	xsre = (XSelectionRequestEvent *) e;
+	xsre = (XSelectionRequestEvent *) e; //-V1027
 	xev.type = SelectionNotify;
 	xev.requestor = xsre->requestor;
 	xev.selection = xsre->selection;
@@ -643,7 +637,7 @@ selrequest(XEvent *e)
 	}
 
 	/* all done, send a notification to the listener */
-	if (!XSendEvent(xsre->display, xsre->requestor, 1, 0, (XEvent *) &xev))
+	if (!XSendEvent(xsre->display, xsre->requestor, 1, 0, (XEvent *) &xev)) //-V641 //-V1027
 		fprintf(stderr, "Error sending SelectionNotify event\n");
 }
 
@@ -763,7 +757,7 @@ xloadcolor(int i, const char *name, Color *ncolor)
 void
 xloadcols(void)
 {
-	int i;
+	uint i;
 	static int loaded;
 	Color *cp;
 
@@ -786,9 +780,10 @@ xloadcols(void)
 	/* set alpha value of bg color */
 	if (opt_alpha)
 		alpha = strtof(opt_alpha, NULL);
-		dc.col[defaultbg].color.alpha = (unsigned short)(0xffff * alpha);
-		dc.col[defaultbg].pixel &= 0x00FFFFFF;
-		dc.col[defaultbg].pixel |= (unsigned char)(0xff * alpha) << 24;
+
+	dc.col[defaultbg].color.alpha = (unsigned short)(0xffff * alpha);
+	dc.col[defaultbg].pixel &= 0x00FFFFFF;
+	dc.col[defaultbg].pixel |= (unsigned char)(0xff * alpha) << 24;
 	loaded = 1;
 }
 
@@ -797,7 +792,7 @@ xsetcolorname(int x, const char *name)
 {
 	Color ncolor;
 
-	if (!BETWEEN(x, 0, dc.collen))
+	if (!BETWEEN(x, 0, (int) dc.collen))
 		return 1;
 
 	if (!xloadcolor(x, name, &ncolor))
@@ -939,7 +934,12 @@ xloadfont(Font *f, FcPattern *pattern)
 	f->rbearing = f->match->max_advance_width;
 
 	f->height = f->ascent + f->descent;
-	f->width = DIVCEIL(extents.xOff, strlen(ascii_printable));
+
+	const size_t nb_ascii_printable = strlen(ascii_printable);
+	if (nb_ascii_printable > 0)
+		f->width = DIVCEIL(extents.xOff, nb_ascii_printable);
+	else
+		die("Cannot divide extents.xOff by zero!");
 
 	return 0;
 }
@@ -988,7 +988,7 @@ xloadfonts(char *fontstr, double fontsize)
 		FcPatternGetDouble(dc.font.match->pattern,
 		                   FC_PIXEL_SIZE, 0, &fontval);
 		usedfontsize = fontval;
-		if (fontsize == 0)
+		if (fabs(fontsize) < FLT_EPSILON)
 			defaultfontsize = fontval;
 	}
 
@@ -1192,7 +1192,7 @@ xinit(int cols, int rows)
 int
 xmakeglyphfontspecs(XftGlyphFontSpec *specs, const Glyph *glyphs, int len, int x, int y)
 {
-	float winx = borderpx + x * win.cw, winy = borderpx + y * win.ch, xp, yp;
+	float winx = borderpx + (float)(x) * win.cw, winy = borderpx + (float)(y) * win.ch, xp, yp;
 	ushort mode, prevmode = USHRT_MAX;
 	Font *font = &dc.font;
 	int frcflags = FRC_NORMAL;
@@ -1505,7 +1505,7 @@ xdrawcursor(int cx, int cy, Glyph g, int ox, int oy, Glyph og)
 	if (IS_SET(MODE_FOCUSED)) {
 		switch (win.cursor) {
 		case 7: /* st extension: snowman (U+2603) */
-			g.u = 0x2603;
+			g.u = 0x2603; //-V560 //-V796
 		case 0: /* Blinking Block */
 		case 1: /* Blinking Block (Default) */
 		case 2: /* Steady Block */
@@ -1654,7 +1654,7 @@ xsetpointermotion(int set)
 }
 
 void
-xsetmode(int set, unsigned int flags)
+xsetmode(int set, uint flags)
 {
 	int mode = win.mode;
 	MODBIT(win.mode, set, flags);
@@ -1723,10 +1723,10 @@ char*
 kmap(KeySym k, uint state)
 {
 	Key *kp;
-	int i;
+	uint i;
 
 	/* Check for mapped keys out of X11 function keys. */
-	for (i = 0; i < LEN(mappedkeys); i++) {
+	for (i = 0; i < LEN(mappedkeys); i++) { //-V1008
 		if (mappedkeys[i] == k)
 			break;
 	}
@@ -1790,13 +1790,13 @@ kpress(XEvent *ev)
 		return;
 	if (len == 1 && e->state & Mod1Mask) {
 		if (IS_SET(MODE_8BIT)) {
-			if (*buf < 0177) {
+			if (*buf < 0177) { //-V536
 				c = *buf | 0x80;
 				len = utf8encode(c, buf);
 			}
 		} else {
 			buf[1] = buf[0];
-			buf[0] = '\033';
+			buf[0] = '\033'; //-V536
 			len = 2;
 		}
 	}
@@ -1817,7 +1817,7 @@ cmessage(XEvent *e)
 		} else if (e->xclient.data.l[1] == XEMBED_FOCUS_OUT) {
 			win.mode &= ~MODE_FOCUSED;
 		}
-	} else if (e->xclient.data.l[0] == xw.wmdeletewin) {
+	} else if (e->xclient.data.l[0] == (uint)xw.wmdeletewin) {
 		ttyhangup();
 		exit(0);
 	}
@@ -1960,7 +1960,7 @@ resource_load(XrmDatabase db, char *name, enum resource_type rtype, void *dst)
 	fullname[sizeof(fullname) - 1] = fullclass[sizeof(fullclass) - 1] = '\0';
 
 	XrmGetResource(db, fullname, fullclass, &type, &ret);
-	if (ret.addr == NULL || strncmp("String", type, 64))
+	if (ret.addr == NULL || strncmp("String", type, 64) != 0)
 		return 1;
 
 	switch (rtype) {
@@ -2082,6 +2082,7 @@ run:
 	xsetenv();
 	selinit();
 	run();
+	xunloadfonts();
 
 	return 0;
 }

@@ -43,7 +43,7 @@
 #define ISCONTROLC0(c)		(BETWEEN(c, 0, 0x1f) || (c) == '\177')
 #define ISCONTROLC1(c)		(BETWEEN(c, 0x80, 0x9f))
 #define ISCONTROL(c)		(ISCONTROLC0(c) || ISCONTROLC1(c))
-#define ISDELIM(u)		(u && wcschr(worddelimiters, u))
+#define ISDELIM(u)		((u) && wcschr(worddelimiters, (u)))
 #define TLINE(y)		((y) < term.scr ? term.hist[((y) + term.histi - \
 				term.scr + HISTSIZE + 1) % HISTSIZE] : \
 				term.line[(y) - term.scr])
@@ -275,8 +275,12 @@ xmalloc(size_t len)
 void *
 xrealloc(void *p, size_t len)
 {
-	if ((p = realloc(p, len)) == NULL)
+	void *p_new = NULL;
+
+	if ((p_new = realloc(p, len)) == NULL)
 		die("realloc: %s\n", strerror(errno));
+
+	p = p_new;
 
 	return p;
 }
@@ -918,7 +922,7 @@ ttywriteraw(const char *s, size_t n)
 			 */
 			if ((r = write(cmdfd, s, (n < lim)? n : lim)) < 0)
 				goto write_error;
-			if (r < n) {
+			if (r < (ssize_t) n) {
 				/*
 				 * We weren't able to write out everything.
 				 * This means the buffer is getting full
@@ -1036,7 +1040,7 @@ treset(void)
 	}, .x = 0, .y = 0, .state = CURSOR_DEFAULT};
 
 	memset(term.tabs, 0, term.col * sizeof(*term.tabs));
-	for (i = tabspaces; i < term.col; i += tabspaces)
+	for (i = tabspaces; i < (uint) term.col; i += tabspaces)
 		term.tabs[i] = 1;
 	term.top = 0;
 	term.bot = term.row - 1;
@@ -1173,7 +1177,7 @@ selscroll(int orig, int n)
 		return;
 
 	if (BETWEEN(sel.ob.y, orig, term.bot) || BETWEEN(sel.oe.y, orig, term.bot)) {
-		if ((sel.ob.y += n) > term.bot || (sel.oe.y += n) < term.top) {
+		if ((sel.ob.y += n) > term.bot || (sel.oe.y += n) < term.top) { //-V1019
 			selclear();
 			return;
 		}
@@ -1933,7 +1937,7 @@ strhandle(void)
 		case 52:
 			if (narg > 2) {
 				dec = base64dec(strescseq.args[2]);
-				if (dec) {
+				if (dec) { //-V547
 					xsetsel(dec);
 					xclipcopy();
 				} else {
@@ -2186,15 +2190,15 @@ tputtab(int n)
 	uint x = term.c.x;
 
 	if (n > 0) {
-		while (x < term.col && n--)
-			for (++x; x < term.col && !term.tabs[x]; ++x)
+		while (x < (uint)term.col && n--)
+			for (++x; x < (uint)term.col && !term.tabs[x]; ++x)
 				/* nothing */ ;
 	} else if (n < 0) {
 		while (x > 0 && n++)
 			for (--x; x > 0 && !term.tabs[x]; --x)
 				/* nothing */ ;
 	}
-	term.c.x = LIMIT(x, 0, term.col-1);
+	term.c.x = LIMIT(x, (uint)0, (uint)term.col-1u);
 }
 
 void
@@ -2295,6 +2299,7 @@ tcontrolcode(uchar ascii)
 		return;
 	case '\032': /* SUB */
 		tsetchar('?', &term.c.attr, term.c.x, term.c.y);
+		break;
 	case '\030': /* CAN */
 		csireset();
 		break;
@@ -2444,7 +2449,7 @@ void
 tputc(Rune u)
 {
 	char c[UTF_SIZ];
-	int control;
+	uint control;
 	int width, len;
 	Glyph *gp;
 
@@ -2489,7 +2494,7 @@ tputc(Rune u)
 		if (term.esc&ESC_DCS && strescseq.len == 0 && u == 'q')
 			term.mode |= MODE_SIXEL;
 
-		if (strescseq.len+len >= sizeof(strescseq.buf)-1) {
+		if ((uint)(strescseq.len)+len >= sizeof(strescseq.buf)-1u) {
 			/*
 			 * Here is a bug in terminals. If the user never sends
 			 * some code to stop the str or esc command, then st
@@ -2527,8 +2532,8 @@ check_control_code:
 		if (term.esc & ESC_CSI) {
 			csiescseq.buf[csiescseq.len++] = u;
 			if (BETWEEN(u, 0x40, 0x7E)
-					|| csiescseq.len >= \
-					sizeof(csiescseq.buf)-1) {
+					|| (uint) csiescseq.len >= \
+					sizeof(csiescseq.buf)-1u) {
 				term.esc = 0;
 				csiparse();
 				csihandle();
@@ -2603,7 +2608,7 @@ twrite(const char *buf, int buflen, int show_ctrl)
 			u = buf[n] & 0xFF;
 			charsize = 1;
 		}
-		if (show_ctrl && ISCONTROL(u)) {
+		if (show_ctrl && ISCONTROL(u)) { //-V560
 			if (u & 0x80) {
 				u &= 0x7f;
 				tputc('^');
@@ -2699,7 +2704,7 @@ tresize(int col, int row)
 		if (mincol < col && 0 < minrow) {
 			tclearregion(mincol, 0, col - 1, minrow - 1);
 		}
-		if (0 < col && minrow < row) {
+		if (minrow < row) {
 			tclearregion(0, minrow, col - 1, row - 1);
 		}
 		tswapscreen();
