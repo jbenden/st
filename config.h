@@ -42,8 +42,8 @@ static unsigned int tripleclicktimeout = 600;
 int allowaltscreen = 1;
 
 /* frames per second st should at maximum draw to the screen */
-static unsigned int xfps = 60;
-static unsigned int actionfps = 30;
+static unsigned int xfps = 120;
+static unsigned int actionfps = 60;
 
 /*
  * blinking timeout (set to 0 to disable blinking) for the terminal blinking
@@ -56,7 +56,7 @@ static unsigned int blinktimeout = 800;
  * improves terminal performance while not reducing functionality to those
  * whom need XIM support.
  */
-int ximspot_update_interval = 1000;
+int ximspot_update_interval = 2000;
 
 /*
  * thickness of underline and bar cursors
