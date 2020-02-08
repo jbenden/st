@@ -1,7 +1,18 @@
 /* See LICENSE for license details. */
 
 #include <stdint.h>
+#include <sys/time.h>
 #include <sys/types.h>
+
+#include <X11/Xatom.h>
+#include <X11/Xlib.h>
+#include <X11/cursorfont.h>
+#include <X11/keysym.h>
+#include <X11/Xft/Xft.h>
+#include <X11/XKBlib.h>
+
+/* Arbitrary size */
+#define HISTSIZE      2000
 
 /* macros */
 #define MIN(a, b)		((a) < (b) ? (a) : (b))
@@ -33,9 +44,21 @@ enum glyph_attribute {
 	ATTR_WRAP       = 1 << 8,
 	ATTR_WIDE       = 1 << 9,
 	ATTR_WDUMMY     = 1 << 10,
-	ATTR_BOXDRAW    = 1 << 11,
+	ATTR_BOXDRAW    = 1 << 12,
+	ATTR_SIXEL      = 1 << 13,
 	ATTR_BOLD_FAINT = ATTR_BOLD | ATTR_FAINT,
 };
+
+typedef struct _ImageList {
+	struct _ImageList *next, *prev;
+	unsigned char *pixels;
+	void *pixmap;
+	int width;
+	int height;
+	int x;
+	int y;
+	int should_delete;
+} ImageList;
 
 enum selection_mode {
 	SEL_IDLE = 0,
@@ -60,6 +83,10 @@ typedef unsigned short ushort; //-V677
 
 typedef uint_least32_t Rune;
 
+typedef XftDraw *Draw;
+typedef XftColor Color;
+typedef XftGlyphFontSpec GlyphFontSpec;
+
 #define Glyph Glyph_
 typedef struct {
 	Rune u;           /* character code */
@@ -69,6 +96,39 @@ typedef struct {
 } Glyph;
 
 typedef Glyph *Line;
+
+typedef struct {
+	Glyph attr; /* current char attributes */
+	int x;
+	int y;
+	char state;
+} TCursor;
+
+/* Internal representation of the screen */
+typedef struct {
+	int row;      /* nb row */
+	int col;      /* nb col */
+	Line *line;   /* screen */
+	Line *alt;    /* alternate screen */
+	Line hist[HISTSIZE]; /* history buffer */
+	int histi;    /* history index */
+	int scr;      /* scroll back */
+	int *dirty;   /* dirtyness of lines */
+	TCursor c;    /* cursor */
+	int ocx;      /* old cursor col */
+	int ocy;      /* old cursor row */
+	int top;      /* top    scroll limit */
+	int bot;      /* bottom scroll limit */
+	int mode;     /* terminal mode flags */
+	int esc;      /* escape state flags */
+	char trantbl[4]; /* charset table translation */
+	int charset;  /* current charset */
+	int icharset; /* selected charset for sequence */
+	int *tabs;
+	struct timespec last_ximspot_update;
+	ImageList *images;     /* sixel images */
+	ImageList *images_alt; /* sixel images for alternate screen */
+} Term;
 
 typedef union {
 	int i;
@@ -83,6 +143,92 @@ typedef struct {
 	void (*func)(const Arg *);
 	const Arg arg;
 } MouseKey;
+
+
+/* Purely graphic info */
+typedef struct {
+	int tw, th; /* tty width and height */
+	int w, h; /* window width and height */
+  int hborderpx, vborderpx; /* window borders */
+	int ch; /* char height */
+	int cw; /* char width  */
+  int cyo; /* char y offset */
+	int mode; /* window state/mode flags */
+	int cursor; /* cursor style */
+} TermWindow;
+
+typedef struct {
+	Display *dpy;
+	Colormap cmap;
+	Window win;
+	Drawable buf;
+	GlyphFontSpec *specbuf; /* font spec buffer used for rendering */
+	Atom xembed, wmdeletewin, netwmname, netwmpid;
+	XIM xim;
+	XIC xic;
+	Draw draw;
+	Visual *vis;
+	XSetWindowAttributes attrs;
+	int scr;
+	int isfixed; /* is fixed geometry? */
+  int depth; /* bit depth */
+	int l, t; /* left and top offset */
+	int gm; /* geometry mask */
+} XWindow;
+
+typedef struct {
+	Atom xtarget;
+	char *primary, *clipboard;
+	struct timespec tclick1;
+	struct timespec tclick2;
+} XSelection;
+
+/* types used in config.h */
+typedef struct {
+	uint mod;
+	KeySym keysym;
+	void (*func)(const Arg *);
+	const Arg arg;
+} Shortcut;
+
+typedef struct {
+	uint b;
+	uint mask;
+	char *s;
+} MouseShortcut;
+
+typedef struct {
+	KeySym k;
+	uint mask;
+	char *s;
+	/* three-valued logic variables: 0 indifferent, 1 on, -1 off */
+	signed char appkey;    /* application keypad */
+	signed char appcursor; /* application cursor */
+} Key;
+
+/* Font structure */
+#define Font Font_
+typedef struct {
+	int height;
+	int width;
+	int ascent;
+	int descent;
+	int badslant;
+	int badweight;
+	short lbearing;
+	short rbearing;
+	XftFont *match;
+	FcFontSet *set;
+	FcPattern *pattern;
+} Font;
+
+/* Drawing Context */
+typedef struct {
+	Color *col;
+	size_t collen;
+	Font font, bfont, ifont, ibfont;
+	GC gc;
+} DC;
 
 void die(const char *, ...);
 void redraw(void);
@@ -145,3 +291,10 @@ extern float alpha;
 extern MouseKey mkeys[];
 extern int boxdraw, boxdraw_bold, boxdraw_braille;
 extern int ximspot_update_interval;
+extern DC dc;
+extern XWindow xw;
+extern XSelection xsel;
+extern TermWindow win;
+extern Term term;
+
+void drawregion(int x1, int y1, int x2, int y2);

@@ -22,29 +22,6 @@ static char *argv0;
 #include "st.h"
 #include "win.h"
 
-/* types used in config.h */
-typedef struct {
-	uint mod;
-	KeySym keysym;
-	void (*func)(const Arg *);
-	const Arg arg;
-} Shortcut;
-
-typedef struct {
-	uint b;
-	uint mask;
-	char *s;
-} MouseShortcut;
-
-typedef struct {
-	KeySym k;
-	uint mask;
-	char *s;
-	/* three-valued logic variables: 0 indifferent, 1 on, -1 off */
-	signed char appkey;    /* application keypad */
-	signed char appcursor; /* application cursor */
-} Key;
-
 /* Xresources preferences */
 enum resource_type {
 	STRING = 0,
@@ -84,72 +61,6 @@ static void zoomreset(const Arg *);
 #define TRUERED(x)		(((x) & 0xff0000) >> 8)
 #define TRUEGREEN(x)		(((x) & 0xff00))
 #define TRUEBLUE(x)		(((x) & 0xff) << 8)
-
-typedef XftDraw *Draw;
-typedef XftColor Color;
-typedef XftGlyphFontSpec GlyphFontSpec;
-
-/* Purely graphic info */
-typedef struct {
-	int tw, th; /* tty width and height */
-	int w, h; /* window width and height */
-        int hborderpx, vborderpx;
-	int ch; /* char height */
-	int cw; /* char width  */
-	int cyo; /* char y offset */
-	int mode; /* window state/mode flags */
-	int cursor; /* cursor style */
-} TermWindow;
-
-typedef struct {
-	Display *dpy;
-	Colormap cmap;
-	Window win;
-	Drawable buf;
-	GlyphFontSpec *specbuf; /* font spec buffer used for rendering */
-	Atom xembed, wmdeletewin, netwmname, netwmpid;
-	XIM xim;
-	XIC xic;
-	Draw draw;
-	Visual *vis;
-	XSetWindowAttributes attrs;
-	int scr;
-	int isfixed; /* is fixed geometry? */
-	int depth; /* bit depth */
-	int l, t; /* left and top offset */
-	int gm; /* geometry mask */
-} XWindow;
-
-typedef struct {
-	Atom xtarget;
-	char *primary, *clipboard;
-	struct timespec tclick1;
-	struct timespec tclick2;
-} XSelection;
-
-/* Font structure */
-#define Font Font_
-typedef struct {
-	int height;
-	int width;
-	int ascent;
-	int descent;
-	int badslant;
-	int badweight;
-	short lbearing;
-	short rbearing;
-	XftFont *match;
-	FcFontSet *set;
-	FcPattern *pattern;
-} Font;
-
-/* Drawing Context */
-typedef struct {
-	Color *col;
-	size_t collen;
-	Font font, bfont, ifont, ibfont;
-	GC gc;
-} DC;
 
 static inline ushort sixd_to_16bit(int);
 static int xmakeglyphfontspecs(XftGlyphFontSpec *, const Glyph *, int, int, int);
@@ -225,10 +136,10 @@ static void (*handler[LASTEvent])(XEvent *) = {
 };
 
 /* Globals */
-static DC dc;
-static XWindow xw;
-static XSelection xsel;
-static TermWindow win;
+DC dc;
+XWindow xw;
+XSelection xsel;
+TermWindow win;
 
 /* Font Ring Cache */
 enum {
@@ -724,6 +635,11 @@ xresize(int col, int row)
 	XFreePixmap(xw.dpy, xw.buf);
 	xw.buf = XCreatePixmap(xw.dpy, xw.win, win.w, win.h,
 			xw.depth);
+	XRectangle rectangles[] = {
+		{win.hborderpx, win.vborderpx,
+			win.w - 2*win.hborderpx, win.h - 2*win.vborderpx}
+	};
+	XSetClipRectangles(xw.dpy, dc.gc, 0, 0, rectangles, 1, Unsorted);
 	XftDrawChange(xw.draw, xw.buf);
 	xclear(0, 0, win.w, win.h);
 
@@ -1248,6 +1164,11 @@ xinit(int cols, int rows)
 	dc.gc = XCreateGC(xw.dpy, xw.buf, GCGraphicsExposures, &gcvalues);
 	XSetForeground(xw.dpy, dc.gc, dc.col[defaultbg].pixel);
 	XFillRectangle(xw.dpy, xw.buf, dc.gc, 0, 0, win.w, win.h);
+	XRectangle rectangles[] = {
+		{win.hborderpx, win.vborderpx,
+			win.w - 2*win.hborderpx, win.h - 2*win.vborderpx}
+	};
+	XSetClipRectangles(xw.dpy, dc.gc, 0, 0, rectangles, 1, Unsorted);
 
 	/* font spec buffer */
 	xw.specbuf = xmalloc(cols * sizeof(GlyphFontSpec));
@@ -1693,6 +1614,27 @@ xsettitle(char *p)
 	XFree(prop.value);
 }
 
+void
+delete_image(ImageList *im)
+{
+	if (im->prev) {
+		im->prev->next = im->next;
+	} else {
+		term.images = im->next;
+	}
+
+	if (im->next) {
+		im->next->prev = im->prev;
+	}
+
+	if (im->pixmap) {
+		XFreePixmap(xw.dpy, (Drawable)im->pixmap);
+	}
+
+	free(im->pixels);
+	free(im);
+}
+
 int
 xstartdraw(void)
 {
@@ -1733,6 +1675,69 @@ xdrawline(Line line, int x1, int y1, int x2)
 void
 xfinishdraw(void)
 {
+	ImageList *im;
+
+	for (im = term.images; im; im = im->next) {
+		if (term.images == NULL) {
+			/* last image was deleted, bail out */
+			break;
+		}
+
+		if (im->should_delete) {
+			delete_image(im);
+
+			/* prevent the next iteration from accessing an invalid
+			   image pointer */
+			im = term.images;
+			if (im == NULL) {
+				break;
+			} else {
+				continue;
+			}
+		}
+
+		if (!im->pixmap) {
+			im->pixmap = (void *)XCreatePixmap(xw.dpy, xw.win,
+					im->width, im->height, xw.depth);
+			XImage ximage = {
+				.format = ZPixmap,
+				.data = (char *)im->pixels,
+				.width = im->width,
+				.height = im->height,
+				.xoffset = 0,
+				.byte_order = LSBFirst,
+				.bitmap_bit_order = MSBFirst,
+				.bits_per_pixel = 32,
+				.bytes_per_line = im->width * 4,
+				.bitmap_unit = 32,
+				.bitmap_pad = 32,
+				.depth = xw.depth
+			};
+			if (0 == XInitImage(&ximage))
+				fprintf(stderr, "Error init image!\n");
+
+			XGCValues igcvalues = {0};
+			GC igc = XCreateGC(xw.dpy, (Drawable)im->pixmap, 0, &igcvalues);
+			XPutImage(xw.dpy, (Drawable)im->pixmap, igc, &ximage,
+					0, 0, 0, 0, im->width, im->height);
+			XFreeGC(xw.dpy, igc);
+
+			free(im->pixels);
+			im->pixels = NULL;
+		}
+
+		XGCValues values = {.function = GXor};
+		XChangeGC(xw.dpy, dc.gc, GCFunction, &values);
+
+		XCopyArea(xw.dpy, (Drawable)im->pixmap, xw.buf, dc.gc,
+				0, 0, im->width, im->height,
+				win.hborderpx + im->x * win.cw,
+				win.vborderpx + im->y * win.ch);
+
+		XGCValues ovalues = {.function = GXcopy};
+		XChangeGC(xw.dpy, dc.gc, GCFunction, &ovalues);
+	}
+
 	XCopyArea(xw.dpy, xw.buf, xw.win, dc.gc, 0, 0, win.w,
 			win.h, 0, 0);
 	XSetForeground(xw.dpy, dc.gc,

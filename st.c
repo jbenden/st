@@ -20,6 +20,7 @@
 
 #include "st.h"
 #include "win.h"
+#include "sixel.h"
 
 #if   defined(__linux)
  #include <pty.h>
@@ -98,13 +99,6 @@ enum escape_state {
 };
 
 typedef struct {
-	Glyph attr; /* current char attributes */
-	int x;
-	int y;
-	char state;
-} TCursor;
-
-typedef struct {
 	int mode;
 	int type;
 	int snap;
@@ -121,30 +115,6 @@ typedef struct {
 
 	int alt;
 } Selection;
-
-/* Internal representation of the screen */
-typedef struct {
-	int row;      /* nb row */
-	int col;      /* nb col */
-	Line *line;   /* screen */
-	Line *alt;    /* alternate screen */
-	Line hist[HISTSIZE]; /* history buffer */
-	int histi;    /* history index */
-	int scr;      /* scroll back */
-	int *dirty;   /* dirtyness of lines */
-	TCursor c;    /* cursor */
-	int ocx;      /* old cursor col */
-	int ocy;      /* old cursor row */
-	int top;      /* top    scroll limit */
-	int bot;      /* bottom scroll limit */
-	int mode;     /* terminal mode flags */
-	int esc;      /* escape state flags */
-	char trantbl[4]; /* charset table translation */
-	int charset;  /* current charset */
-	int icharset; /* selected charset for sequence */
-	int *tabs;
-	struct timespec last_ximspot_update;
-} Term;
 
 /* CSI Escape sequence structs */
 /* ESC '[' [[ [<priv>] <arg> [;]] <mode> [<mode>]] */
@@ -173,6 +143,7 @@ static void sigchld(int);
 static void ttywriteraw(const char *, size_t);
 
 static void csidump(void);
+static void dcshandle(void);
 static void csihandle(void);
 static void csiparse(void);
 static void csireset(void);
@@ -216,8 +187,6 @@ static int32_t tdefcolor(int *, int *, int);
 static void tdeftran(char);
 static void tstrsequence(uchar);
 
-static void drawregion(int, int, int, int);
-
 static void selnormalize(void);
 static void selscroll(int, int);
 static void selsnap(int *, int *, int);
@@ -233,13 +202,14 @@ static char base64dec_getc(const char **);
 static ssize_t xwrite(int, const char *, size_t);
 
 /* Globals */
-static Term term;
+Term term;
 static Selection sel;
 static CSIEscape csiescseq;
 static STREscape strescseq;
 static int iofd = 1;
 static int cmdfd;
 static pid_t pid;
+sixel_state_t sixel_st;
 
 static uchar utfbyte[UTF_SIZ + 1] = {0x80,    0, 0xC0, 0xE0, 0xF0};
 static uchar utfmask[UTF_SIZ + 1] = {0xC0, 0x80, 0xE0, 0xF0, 0xF8};
@@ -1031,9 +1001,33 @@ tcursor(int mode)
 }
 
 void
+scroll_images(int n) {
+	ImageList *im;
+	int tmp;
+
+	/* maximum sixel distance in lines from current view before
+	 * deallocation 
+	 * TODO: should be in config.h */
+	int max_sixel_distance = 10000;
+
+	for (im = term.images; im; im = im->next) {
+		im->y += n;
+
+		/* check if the current sixel has exceeded the maximum
+		 * draw distance, and should therefore be deleted */
+		tmp = im->y;
+		if (tmp < 0) { tmp = tmp * -1; }
+		if (tmp > max_sixel_distance) {
+			im->should_delete = 1;
+		}
+	}
+}
+
+void
 treset(void)
 {
 	uint i;
+	ImageList *im;
 
 	term.c = (TCursor){{
 		.mode = ATTR_NULL,
@@ -1056,6 +1050,10 @@ treset(void)
 		tclearregion(0, 0, term.col-1, term.row-1);
 		tswapscreen();
 	}
+
+	for (im = term.images; im; im = im->next) {
+		im->should_delete = 1;
+	}
 }
 
 void
@@ -1076,9 +1074,12 @@ void
 tswapscreen(void)
 {
 	Line *tmp = term.line;
+	ImageList *im = term.images;
 
 	term.line = term.alt;
 	term.alt = tmp;
+	term.images = term.images_alt;
+	term.images_alt = im;
 	term.mode ^= MODE_ALTSCREEN;
 	tfulldirt();
 }
@@ -1099,6 +1100,8 @@ kscrolldown(const Arg* a)
 		selscroll(0, -n);
 		tfulldirt();
 	}
+
+	scroll_images(-1*n);
 }
 
 void
@@ -1114,6 +1117,8 @@ kscrollup(const Arg* a)
 		selscroll(0, n);
 		tfulldirt();
 	}
+
+	scroll_images(n);
 }
 
 void
@@ -1139,6 +1144,8 @@ tscrolldown(int orig, int n, int copyhist)
 		term.line[i] = term.line[i-n];
 		term.line[i-n] = temp;
 	}
+
+	scroll_images(n);
 
 	selscroll(orig, n);
 }
@@ -1169,6 +1176,8 @@ tscrollup(int orig, int n, int copyhist)
 		term.line[i] = term.line[i+n];
 		term.line[i+n] = temp;
 	}
+
+	scroll_images(-1 * n);
 
 	selscroll(orig, -n);
 }
@@ -1201,6 +1210,7 @@ selscroll(int orig, int n)
 		}
 		selnormalize();
 	}
+
 }
 
 void
@@ -1309,9 +1319,12 @@ tsetchar(Rune u, Glyph *attr, int x, int y)
 		term.line[y][x].mode |= ATTR_BOXDRAW;
 }
 
+void delete_image(ImageList *);
+
 void
 tclearregion(int x1, int y1, int x2, int y2)
 {
+	ImageList *im;
 	int x, y, temp;
 	Glyph *gp;
 
@@ -1335,6 +1348,33 @@ tclearregion(int x1, int y1, int x2, int y2)
 			gp->bg = term.c.attr.bg;
 			gp->mode = 0;
 			gp->u = ' ';
+		}
+	}
+
+	/* search for images which intersect the region */
+	/* https://stackoverflow.com/questions/306316/determine-if-two-rectangles-overlap-each-other#306332 */
+	for (im = term.images; im; im = im->next) {
+		if (term.images == NULL) {
+			/* last image was deleted, bail out */
+			break;
+		}
+
+#if DEBUG
+		printf("y1=%d y=%d  y2=%d y=%d\n", y1, im->y, y2, im->height/win.ch);
+#endif
+
+		int im_left = im->x;
+		int im_right = (im->width / win.cw) + im->x;
+		int im_top = im->y;
+		int im_bottom = (im->height / win.ch) + im->y;
+
+		if (y1 != y2 &&
+			x1 < im_right && x2 > im_left &&
+			y1 < im_bottom && y2 > im_top) {
+			delete_image(im);
+
+			im = term.images;
+			if (im == NULL) break;
 		}
 	}
 }
@@ -1685,6 +1725,23 @@ tsetmode(int priv, int set, int *args, int narg)
 	}
 }
 
+ void
+dcshandle(void)
+{
+	switch (csiescseq.mode[0]) {
+	default:
+		fprintf(stderr, "erresc: unknown csi ");
+		csidump();
+		/* die(""); */
+		break;
+	case 'q': /* DECSIXEL */
+		if (sixel_parser_init(&sixel_st, 0, 0 << 16 | 0 << 8 | 0, 1, win.cw, win.ch) != 0)
+			perror("sixel_parser_init() failed");
+		term.mode |= MODE_SIXEL;
+		break;
+	}
+}
+
 void
 csihandle(void)
 {
@@ -1815,11 +1872,11 @@ csihandle(void)
 		break;
 	case 'S': /* SU -- Scroll <n> line up */
 		DEFAULT(csiescseq.arg[0], 1);
-		tscrollup(term.top, csiescseq.arg[0], 0);
+		tscrollup(term.top, csiescseq.arg[0], 1);
 		break;
 	case 'T': /* SD -- Scroll <n> line down */
 		DEFAULT(csiescseq.arg[0], 1);
-		tscrolldown(term.top, csiescseq.arg[0], 0);
+		tscrolldown(term.top, csiescseq.arg[0], 1);
 		break;
 	case 'L': /* IL -- Insert <n> blank lines */
 		DEFAULT(csiescseq.arg[0], 1);
@@ -1878,6 +1935,40 @@ csihandle(void)
 	case 'u': /* DECRC -- Restore cursor position (ANSI.SYS) */
 		tcursor(CURSOR_LOAD);
 		break;
+	case 't':
+		switch (csiescseq.arg[0]) {
+		case 14: /* Report window size in pixels */
+			len = snprintf(buf, sizeof(buf),"\033[4;%i;%it",
+				win.h - win.vborderpx*2, win.w - win.hborderpx*2);
+			ttywrite(buf, len, 0);
+			break;
+		case 16: /* Report character size in pixels */
+			len = snprintf(buf, sizeof(buf),"\033[6;%i;%it",
+				win.ch, win.cw);
+			ttywrite(buf, len, 0);
+			break;
+		case 18: /* Report terminal size in characters */
+			len = snprintf(buf, sizeof(buf),"\033[8;%i;%it",
+				term.row, term.col);
+			ttywrite(buf, len, 0);
+			break;
+		case 21: /* Report window title */
+		case 22: /* Save window title on stack */
+		case 23: /* Restore window title from stack */
+			break;
+		default:
+			csidump();
+		}
+		break;
+	case '$':
+		switch (csiescseq.mode[1]) {
+		case 'x':
+			tclearregion(csiescseq.arg[2], csiescseq.arg[1], csiescseq.arg[4], csiescseq.arg[3]);
+			break;
+		default:
+			csidump();
+		}
+		break;
 	case ' ':
 		switch (csiescseq.mode[1]) {
 		case 'q': /* DECSCUSR -- Set Cursor Style */
@@ -1926,6 +2017,8 @@ strhandle(void)
 {
 	char *p = NULL, *dec;
 	int j, narg, par;
+	ImageList *new_image;
+	int i;
 
 	term.esc &= ~(ESC_STR_END|ESC_STR);
 	strparse();
@@ -1999,7 +2092,51 @@ strhandle(void)
 		xsettitle(strescseq.args[0]);
 		return;
 	case 'P': /* DCS -- Device Control String */
-		term.mode |= ESC_DCS;
+		if (IS_SET(MODE_SIXEL)) {
+			term.mode &= ~MODE_SIXEL;
+			new_image = malloc(sizeof(ImageList));
+			memset(new_image, 0, sizeof(ImageList));
+			new_image->x = term.c.x;
+			new_image->y = term.c.y;
+			new_image->width = sixel_st.image.width;
+			new_image->height = sixel_st.image.height;
+			new_image->pixels = malloc(new_image->width * new_image->height * 4);
+			if (sixel_parser_finalize(&sixel_st, new_image->pixels) != 0) {
+				perror("sixel_parser_finalize() failed");
+				sixel_parser_deinit(&sixel_st);
+				return;
+			}
+			sixel_parser_deinit(&sixel_st);
+			if (term.images) {
+				ImageList *im;
+				for (im = term.images; im->next;)
+					im = im->next;
+				im->next = new_image;
+				new_image->prev = im;
+			} else {
+				term.images = new_image;
+			}
+			for (i = 0; i < (sixel_st.image.height + win.ch-1)/win.ch; ++i) {
+				int x;
+				Glyph *gp;
+				term.dirty[term.c.y] = 1;
+				for (x = term.c.x; x < MIN(term.col, term.c.x+(sixel_st.image.width+win.cw-1)/win.cw); x++) {
+					gp = &term.line[term.c.y][x];
+					if (selected(x, term.c.y))
+						selclear();
+					gp->fg = term.c.attr.fg;
+					gp->bg = term.c.attr.bg;
+					gp->mode = ATTR_SIXEL;
+					gp->u = ' ';
+				}
+				if (term.c.y == term.bot) {
+					tscrollup(term.top, 1, 1);
+				} else {
+					term.c.y++;
+				}
+			}
+		}
+		return;
 	case '_': /* APC -- Application Program Command */
 	case '^': /* PM -- Privacy Message */
 		return;
@@ -2404,6 +2541,8 @@ eschandle(uchar ascii)
 		term.esc |= ESC_UTF8;
 		return 0;
 	case 'P': /* DCS -- Device Control String */
+		term.esc |= ESC_DCS;
+		/* fallthrough */
 	case '_': /* APC -- Application Program Command */
 	case '^': /* PM -- Privacy Message */
 	case ']': /* OSC -- Operating System Command */
@@ -2506,21 +2645,17 @@ tputc(Rune u)
 		if (u == '\a' || u == 030 || u == 032 || u == 033 ||
 		   ISCONTROLC1(u)) {
 			term.esc &= ~(ESC_START|ESC_STR|ESC_DCS);
-			if (IS_SET(MODE_SIXEL)) {
-				/* TODO: render sixel */;
-				term.mode &= ~MODE_SIXEL;
-				return;
-			}
 			term.esc |= ESC_STR_END;
 			goto check_control_code;
 		}
 
 		if (IS_SET(MODE_SIXEL)) {
-			/* TODO: implement sixel mode */
+			if (sixel_parser_parse(&sixel_st, (unsigned char *)&u, 1) != 0)
+				perror("sixel_parser_parse() failed");
 			return;
 		}
-		if (term.esc&ESC_DCS && strescseq.len == 0 && u == 'q')
-			term.mode |= MODE_SIXEL;
+		if (term.esc & ESC_DCS)
+			goto check_control_code;
 
 		if ((uint)(strescseq.len)+len >= sizeof(strescseq.buf)-1u) {
 			/*
@@ -2565,6 +2700,15 @@ check_control_code:
 				term.esc = 0;
 				csiparse();
 				csihandle();
+			}
+			return;
+		} else if (term.esc & ESC_DCS) {
+			csiescseq.buf[csiescseq.len++] = u;
+			if (BETWEEN(u, 0x40, 0x7E)
+					|| csiescseq.len >= \
+					sizeof(csiescseq.buf)-1) {
+				csiparse();
+				dcshandle();
 			}
 			return;
 		} else if (term.esc & ESC_UTF8) {
