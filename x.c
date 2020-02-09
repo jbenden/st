@@ -635,13 +635,16 @@ xresize(int col, int row)
 	XFreePixmap(xw.dpy, xw.buf);
 	xw.buf = XCreatePixmap(xw.dpy, xw.win, win.w, win.h,
 			xw.depth);
+	XftDrawChange(xw.draw, xw.buf);
+	XSetClipMask(xw.dpy, dc.gc, None);
+	XSetForeground(xw.dpy, dc.gc, dc.col[defaultbg].pixel);
+	XFillRectangle(xw.dpy, xw.win, dc.gc, 0, 0, win.w, win.h);
+	// xclear(0, 0, win.w, win.h);
 	XRectangle rectangles[] = {
 		{win.hborderpx, win.vborderpx,
 			win.w - 2*win.hborderpx, win.h - 2*win.vborderpx}
 	};
 	XSetClipRectangles(xw.dpy, dc.gc, 0, 0, rectangles, 1, Unsorted);
-	XftDrawChange(xw.draw, xw.buf);
-	xclear(0, 0, win.w, win.h);
 
 	/* resize to new width */
 	xw.specbuf = xrealloc(xw.specbuf, col * sizeof(GlyphFontSpec));
