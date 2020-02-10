@@ -217,8 +217,8 @@ ResourcePref resources[] = {
  */
 static MouseShortcut mshortcuts[] = {
 	/* button               mask            string */
-	{ Button4,              XK_NO_MOD,      "\031" },
-	{ Button5,              XK_NO_MOD,      "\005" },
+	{ Button4,              XK_NO_MOD,      "\033OA" },
+	{ Button5,              XK_NO_MOD,      "\033OB" },
 };
 
 /* Internal keyboard shortcuts. */

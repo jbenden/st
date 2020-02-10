@@ -357,7 +357,7 @@ bpress(XEvent *e)
 		for (ms = mshortcuts; ms < mshortcuts + LEN(mshortcuts); ms++) {
 			if (e->xbutton.button == ms->b
 					&& match(ms->mask, e->xbutton.state)) {
-				ttywrite(ms->s, strlen(ms->s), 1);
+				ttywrite(ms->s, strlen(ms->s), 0);
 				return;
 			}
 		}
