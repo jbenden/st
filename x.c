@@ -1958,9 +1958,6 @@ cmessage(XEvent *e)
 void
 resize(XEvent *e)
 {
-	if (e->xconfigure.width == win.w && e->xconfigure.height == win.h)
-		return;
-
 	cresize(e->xconfigure.width, e->xconfigure.height);
 }
 
