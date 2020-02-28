@@ -216,9 +216,11 @@ ResourcePref resources[] = {
  * Beware that overloading Button1 will disable the selection.
  */
 static MouseShortcut mshortcuts[] = {
-	/* button               mask            string */
-	{ Button4,              XK_NO_MOD,      "\033OA" },
-	{ Button5,              XK_NO_MOD,      "\033OB" },
+	/* button               mask       alt            string */
+	{ Button4,              XK_NO_MOD, 1,             "\033OA" },
+	{ Button5,              XK_NO_MOD, 1,             "\033OB" },
+	{ Button4,              XK_NO_MOD, 0,             "\033[A" },
+	{ Button5,              XK_NO_MOD, 0,             "\033[B" },
 };
 
 /* Internal keyboard shortcuts. */

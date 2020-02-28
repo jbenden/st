@@ -194,6 +194,7 @@ typedef struct {
 typedef struct {
 	uint b;
 	uint mask;
+	uint alt;
 	char *s;
 } MouseShortcut;
 
